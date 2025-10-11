@@ -1,0 +1,34 @@
+# Large data files
+Financial Fraud-Rawdata.csv
+
+# Spark model files (too large for GitHub)
+models/
+
+# Output files (can be regenerated)
+outputs/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Environment files
+.env
+.venv
+env/
+venv/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Log files
+*.log
