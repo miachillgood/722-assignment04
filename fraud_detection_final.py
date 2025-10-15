@@ -92,16 +92,30 @@ def find_optimal_threshold(model, validation_df, fp_cost, fn_cost):
 
     probs_labels = [(float(r["score"]), int(r["label"])) for r in use_df.collect()]
     best_tau, min_cost = 0.5, float("inf")
+    
+    # Record cost curve data
+    cost_curve_data = []
 
     for tau in THRESH_SCAN:
+        fp_count, fn_count = 0, 0
         cost = 0.0
         for p, y in probs_labels:
             if p >= tau and y == 0:
+                fp_count += 1
                 cost += fp_cost
             elif p < tau and y == 1:
+                fn_count += 1
                 cost += fn_cost
+        
+        cost_curve_data.append([tau, fp_count, fn_count, cost])
+        
         if cost < min_cost:
             min_cost, best_tau = cost, tau
+
+    # Save cost curve data
+    save_csv(cost_curve_data, ["threshold", "fp_count", "fn_count", "total_cost"], 
+             OUT_DIR / "cost_curve.csv")
+    print(f"Cost curve saved to: {OUT_DIR}/cost_curve.csv")
 
     print(f"Optimal threshold (τ*): {best_tau:.4f} | Min business cost: {min_cost:.2f}")
     save_json(
@@ -299,6 +313,46 @@ if __name__ == "__main__":
     type_counts.coalesce(1).write.mode("overwrite").option("header", True) \
                .csv(str(OUT_DIR / "eda_type_by_label_counts"))
 
+    # === 2.3.1 EDA Viz: Type × Label (bar) ===
+    print("\n=== EDA Viz: Type × Label (bar) ===")
+    try:
+        import matplotlib
+        matplotlib.use("Agg")  # headless backend
+        import matplotlib.pyplot as plt
+        import numpy as np
+
+        # Convert to pandas (small table)
+        pdf_counts = type_counts.toPandas()
+        pivot = (pdf_counts
+                 .pivot_table(index="type", columns=LABEL_COL, values="count", fill_value=0)
+                 .rename(columns={0: "not_fraud", 1: "fraud"})
+                 .sort_index())
+
+        # Save pivot for appendix/reference
+        pivot.to_csv(OUT_DIR / "eda_type_by_label_pivot.csv", index=True)
+
+        # Grouped bar plot
+        types = pivot.index.tolist()
+        x = np.arange(len(types))
+        w = 0.38
+        fig = plt.figure(figsize=(8, 4.5), dpi=160)
+        ax = fig.add_subplot(111)
+        ax.bar(x - w/2, pivot["not_fraud"].values, width=w, label="isFraud=0")
+        ax.bar(x + w/2, pivot["fraud"].values,     width=w, label="isFraud=1")
+        ax.set_xticks(x)
+        ax.set_xticklabels(types, rotation=0)
+        ax.set_xlabel("Transaction Type")
+        ax.set_ylabel("Count")
+        ax.set_title("Type × Label Counts (Raw Data)")
+        ax.legend()
+        fig.tight_layout()
+        figpath1 = OUT_DIR / "fig_2_3a_type_by_label_bar.png"
+        fig.savefig(figpath1)
+        plt.close(fig)
+        print(f"Saved: {figpath1}")
+    except Exception as e:
+        print(f"Warning: failed to create type×label bar chart: {e}")
+
     # === Preprocessing ===
     print("\n=== Preprocessing ===")
     df_sel = raw.filter(F.col("type").isin("TRANSFER", "CASH_OUT"))
@@ -308,6 +362,51 @@ if __name__ == "__main__":
         df_log = df_log.withColumn(f"{c}_log1p", F.log1p(F.col(c)))
     processed = df_log.select(FEATURES_FINAL + [LABEL_COL])
     print("Preprocessing complete.")
+
+    # === 2.3.2 EDA Viz: amount (raw) vs log1p(amount) (hist) ===
+    print("\n=== EDA Viz: amount vs log1p(amount) (hist) ===")
+    try:
+        import numpy as np
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+
+        sample_frac = 0.05
+        max_rows = 300_000
+
+        hist_df = (df_log
+                   .select(F.col("amount"), F.col("amount_log1p"))
+                   .sample(withReplacement=False, fraction=sample_frac, seed=SEED)
+                   .na.drop())
+        hist_df = hist_df.limit(max_rows)
+        pdf_hist = hist_df.toPandas()
+
+        # Clip raw amount at 99th percentile for readability
+        p99 = float(np.quantile(pdf_hist["amount"].values, 0.99)) if len(pdf_hist) else 0.0
+        amt_clip = np.clip(pdf_hist["amount"].values, 0, p99) if len(pdf_hist) else []
+        amt_log  = pdf_hist["amount_log1p"].values if len(pdf_hist) else []
+
+        fig = plt.figure(figsize=(9.5, 4.5), dpi=160)
+        ax1 = fig.add_subplot(1, 2, 1)
+        ax1.hist(amt_clip, bins=60)
+        ax1.set_title(f"amount (clipped at 99th={p99:.0f})")
+        ax1.set_xlabel("amount (raw)")
+        ax1.set_ylabel("frequency")
+
+        ax2 = fig.add_subplot(1, 2, 2)
+        ax2.hist(amt_log, bins=60)
+        ax2.set_title("log1p(amount)")
+        ax2.set_xlabel("log1p(amount)")
+        ax2.set_ylabel("frequency")
+
+        fig.suptitle("Distribution: amount (raw) vs log1p(amount)")
+        fig.tight_layout(rect=[0, 0.03, 1, 0.95])
+        figpath2 = OUT_DIR / "fig_2_3b_amount_vs_log1p_hist.png"
+        fig.savefig(figpath2)
+        plt.close(fig)
+        print(f"Saved: {figpath2}")
+    except Exception as e:
+        print(f"Warning: failed to create amount vs log1p histograms: {e}")
 
     # === Split (70/15/15) ===
     print("\n=== Data Splits ===")
